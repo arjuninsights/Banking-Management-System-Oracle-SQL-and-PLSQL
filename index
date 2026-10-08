@@ -1,3 +1,0 @@
-----Create Indexes for Performance----
-CREATE INDEX idx_account_customer ON accounts(customer_id);
-CREATE INDEX idx_transaction_account ON transaction(from_account, to_account);
