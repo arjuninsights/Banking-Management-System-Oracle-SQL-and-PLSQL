@@ -1,145 +1,510 @@
-# Banking Management System
+# 🏦 Banking Management System — Oracle SQL and PL/SQL Project
 
-A complete **Banking Management System** developed using **Oracle SQL** and **PL/SQL** to manage banking operations such as account management, secure fund transfers, deposits, withdrawals, transaction tracking, and audit logging.
-
----
-
-# Technologies Used
-
-- Oracle SQL
-- PL/SQL
-- Stored Procedures
-- Functions
-- Packages
-- Triggers
-- Cursors
-- Exception Handling
-- Transaction Control (`COMMIT` & `ROLLBACK`)
+A complete **console-based Banking Management System** built entirely on **Oracle Database using SQL and PL/SQL**, implementing real banking operations such as deposits, withdrawals, fund transfers, audit logging, transaction history, and business-rule validations — all handled at the **database layer**.
 
 ---
 
-# Key Features
+## 🔎 Project Overview
 
-## Account Management
+This project simulates the **backend engine of a real bank**.
+Instead of writing banking logic in Java/Python, **all business rules, validations, and transaction safety are enforced inside the database** using SQL and PL/SQL — exactly how core-banking systems (CBS) are designed in the real world.
 
-- Create and manage customer accounts
-- Account status validation (`ACTIVE / INACTIVE`)
-- Balance inquiry functionality
+**Key ideas implemented:**
 
----
-
-## Secure Transaction Processing
-
-- Deposit Money
-- Withdraw Money
-- Fund Transfer Between Accounts
-- Secure transaction handling using `COMMIT` and `ROLLBACK`
+* ACID-safe money movement (`COMMIT` / `ROLLBACK`)
+* Automatic audit trail using triggers
+* Business validations (negative balance, ATM limit, insufficient funds)
+* Modular code using **Packages** (spec + body)
+* Cursor-based transaction statement printing
+* Indexing for query performance
 
 ---
 
-## Advanced PL/SQL Features
+## 🗄️ 1. Database Schema Design
 
-- PL/SQL Packages for modular programming
-- Stored Procedures and Functions
-- Cursor-based transaction history
-- Triggers for automatic validations and audit logging
-- Exception handling using `RAISE_APPLICATION_ERROR`
+### 👤 Customer Table — *stores bank customer master data*
 
----
+```sql
+CREATE TABLE customer (
+    customer_id   NUMBER PRIMARY KEY, 
+    customer_name VARCHAR2(100),
+    phone_number  VARCHAR2(15),
+    city          VARCHAR2(50)
+);
+```
 
-## Banking Validations
-
-- Negative balance prevention
-- Daily ATM withdrawal limit validation
-- Insufficient balance validation
-- Failed transaction logging
+**What it does:** Holds the identity of every bank customer. `customer_id` is the **primary key**, which uniquely identifies a customer and is later referenced by accounts.
 
 ---
 
-## Performance Optimization
+### 💳 Accounts Table — *stores bank accounts linked to customers*
 
-- Indexed columns for faster query execution
-- Optimized SQL queries
-- Efficient transaction processing
+```sql
+CREATE TABLE accounts (
+    account_id     NUMBER PRIMARY KEY,
+    customer_id    NUMBER,
+    account_type   VARCHAR2(20),
+    balance        NUMBER(12,2),
+    account_status VARCHAR2(20),
+    created_date   DATE,
+    CONSTRAINT fk_customer FOREIGN KEY (customer_id)
+        REFERENCES customer(customer_id)
+);
+```
 
----
+**What it does:**
 
-## Audit & Monitoring
-
-- Automatic audit trail for balance changes
-- Transaction history tracking
-- Secure logging mechanism
-
----
-
-# Database Objects
-
-## Tables
-
-- Customers
-- Accounts
-- Transactions
-- Account_Audit
+* One customer can have **many accounts** (1 : M relationship).
+* `FOREIGN KEY` enforces **referential integrity** — you cannot create an account for a customer who doesn't exist.
+* `account_status` is used to block transactions on `INACTIVE` / `FROZEN` accounts.
+* `balance NUMBER(12,2)` stores money with 2 decimal precision.
 
 ---
 
-## PL/SQL Objects
+### 💸 Transaction Table — *immutable ledger of every money movement*
 
-- Procedures
-- Functions
-- Packages
-- Triggers
-- Cursors
-- Sequences
-- Indexes
+```sql
+CREATE TABLE transaction (
+    txn_id       NUMBER PRIMARY KEY,
+    from_account NUMBER,
+    to_account   NUMBER,
+    txn_type     VARCHAR2(20),
+    amount       NUMBER(12,2),
+    txn_date     DATE,
+    txn_status   VARCHAR2(20)
+);
+```
 
----
+**What it does:** Acts as the **passbook / ledger**.
 
-# Modules Included
+| Transaction Type | from_account | to_account |
+| ---------------- | ------------ | ---------- |
+| DEPOSIT          | NULL         | account    |
+| WITHDRAW         | account      | NULL       |
+| TRANSFER         | sender       | receiver   |
 
-| Module | Description |
-|--------|-------------|
-| Account Management | Manage customer bank accounts |
-| Deposit Module | Add money securely |
-| Withdrawal Module | Withdraw money with validations |
-| Fund Transfer | Transfer funds between accounts |
-| Audit Logging | Store account activity logs |
-| Transaction History | View transaction details |
-| Balance Validation | Prevent invalid transactions |
-
----
-
-# Advanced Features
-
-- Secure transaction handling using `COMMIT` and `ROLLBACK`
-- Daily ATM withdrawal limit validation
-- Failed transaction tracking
-- Account status validation
-- Audit trail for balance updates
-- Cursor-based transaction history
-- Indexed columns for performance tuning
-- Exception handling using `RAISE_APPLICATION_ERROR`
-- Optimized SQL queries for faster execution
+`txn_status` records whether the transaction was `SUCCESS` or `FAILED` — so even failed transfers are traceable.
 
 ---
 
-# Learning Outcomes
+### 🧾 Audit Table — *automatic security log of balance changes*
 
-- Real-world PL/SQL project development
-- Database transaction management
-- Banking domain validation handling
-- Performance tuning using indexes
-- Writing modular PL/SQL code using packages
-- Advanced exception handling techniques
+```sql
+CREATE TABLE account_audit (
+    audit_id    NUMBER GENERATED BY DEFAULT AS IDENTITY,
+    account_id  NUMBER,
+    action_type VARCHAR2(50),
+    action_date DATE,
+    old_balance NUMBER(12,2),
+    new_balance NUMBER(12,2)
+);
+```
+
+**What it does:** Every time a balance changes, a record is auto-inserted here by a trigger — storing **old value vs new value**. This is used for **fraud detection and compliance auditing**.
+`GENERATED BY DEFAULT AS IDENTITY` auto-generates the audit ID (no sequence needed).
 
 ---
 
-# Sample Operations
+## 🌱 2. Sample Data
 
-## Deposit Money
+```sql
+INSERT INTO customer VALUES (1, 'Arjun Kumar', '9876543210', 'Gopalganj');
+INSERT INTO customer VALUES (2, 'Rahul Kumar', '9876500000', 'Patna');
+
+INSERT INTO accounts VALUES (1001, 1, 'SAVINGS', 50000, 'ACTIVE', SYSDATE);
+INSERT INTO accounts VALUES (1002, 2, 'SAVINGS', 30000, 'ACTIVE', SYSDATE);
+COMMIT;
+```
+
+**What it does:** Creates 2 customers and 2 active savings accounts so the system can be tested immediately.
+
+---
+
+## ⚡ 3. Triggers
+
+### 🚫 Trigger 1 — Prevent Negative Balance
+
+```sql
+CREATE OR REPLACE TRIGGER trg_balance_validation
+BEFORE UPDATE OF balance ON accounts
+FOR EACH ROW
+BEGIN
+    IF :NEW.balance < 0 THEN
+        RAISE_APPLICATION_ERROR(-20001, 'Insufficient Balance');
+    END IF;
+END;
+```
+
+**What it does:** Fires **BEFORE** any balance update. If the new balance would go below zero, it **aborts the entire transaction** with a custom error.
+👉 This is the **last line of defence** — even if someone updates the table manually via SQL (bypassing the package), the account can never go negative.
+
+---
+
+### 📝 Trigger 2 — Automatic Audit Logging
+
+```sql
+CREATE OR REPLACE TRIGGER trg_account_audit
+AFTER UPDATE OF balance ON accounts
+FOR EACH ROW
+BEGIN
+    INSERT INTO account_audit (account_id, action_type, action_date, old_balance, new_balance)
+    VALUES (:NEW.account_id, 'BALANCE_UPDATED', SYSDATE, :OLD.balance, :NEW.balance);
+END;
+```
+
+**What it does:** Fires **AFTER** a successful balance update and silently writes an audit row using `:OLD` and `:NEW` pseudo-records.
+👉 Auditing happens **automatically** — the application code never has to remember to log anything.
+
+---
+
+## 🧮 4. Function
+
+### Balance Enquiry Function
+
+```sql
+CREATE OR REPLACE FUNCTION get_balance (p_account_id NUMBER)
+RETURN NUMBER
+IS
+    v_balance NUMBER;
+BEGIN
+    SELECT balance INTO v_balance
+    FROM accounts
+    WHERE account_id = p_account_id;
+
+    RETURN v_balance;
+EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+        RETURN 0;
+END;
+```
+
+**What it does:** A **reusable function** that returns the current balance of an account (like an ATM "Balance Enquiry").
+Since it's a function (not a procedure), it can be called directly inside SQL:
+
+```sql
+SELECT get_balance(1001) FROM dual;
+```
+
+**Exception handling:** If the account doesn't exist, instead of crashing with `NO_DATA_FOUND`, it safely returns `0`.
+
+---
+
+## 📦 5. Package Specification
+
+*The public "menu" / API of the banking system*
+
+```sql
+CREATE OR REPLACE PACKAGE bank_package
+IS
+    PROCEDURE deposit_money           (p_account_id NUMBER, p_amount NUMBER);
+    PROCEDURE withdraw_money          (p_account_id NUMBER, p_amount NUMBER);
+    PROCEDURE transfer_funds          (p_from_account NUMBER, p_to_account NUMBER, p_amount NUMBER);
+    PROCEDURE show_transaction_history(p_account_id NUMBER);
+END bank_package;
+```
+
+**What it does:** Declares **what** operations the bank supports, without revealing **how** they work.
+👉 This gives **encapsulation**: users of the package only see the interface, logic stays hidden in the body.
+
+---
+
+## ⚙️ 6. Package Body — Core Banking Logic
+
+### 💰 Deposit Money
+
+```sql
+PROCEDURE deposit_money (p_account_id NUMBER, p_amount NUMBER)
+IS
+BEGIN
+    UPDATE accounts
+       SET balance = balance + p_amount
+     WHERE account_id = p_account_id
+       AND account_status = 'ACTIVE';
+
+    INSERT INTO transaction
+    VALUES (transaction_seq.NEXTVAL, NULL, p_account_id, 'DEPOSIT', p_amount, SYSDATE, 'SUCCESS');
+
+    COMMIT;
+    DBMS_OUTPUT.PUT_LINE('Amount Deposited Successfully');
+EXCEPTION
+    WHEN OTHERS THEN
+        ROLLBACK;
+        DBMS_OUTPUT.PUT_LINE(SQLERRM);
+END deposit_money;
+```
+
+**Step-by-step logic:**
+
+1. Credits the amount — **only if the account is ACTIVE**.
+2. Writes a `DEPOSIT` entry into the ledger using the sequence for a unique txn ID.
+3. `COMMIT` makes both changes permanent **together**.
+4. On any error → `ROLLBACK` undoes everything (money is never half-credited).
+
+---
+
+### 🏧 Withdraw Money
+
+```sql
+PROCEDURE withdraw_money (p_account_id NUMBER, p_amount NUMBER)
+IS
+    v_balance NUMBER;
+BEGIN
+    SELECT balance INTO v_balance
+      FROM accounts
+     WHERE account_id = p_account_id AND account_status = 'ACTIVE';
+
+    IF p_amount > 20000 THEN
+        RAISE_APPLICATION_ERROR(-20002, 'Daily ATM Withdrawal Limit Exceeded');
+    END IF;
+
+    IF v_balance < p_amount THEN
+        RAISE_APPLICATION_ERROR(-20003, 'Insufficient Funds');
+    END IF;
+
+    UPDATE accounts SET balance = balance - p_amount WHERE account_id = p_account_id;
+
+    INSERT INTO transaction
+    VALUES (transaction_seq.NEXTVAL, p_account_id, NULL, 'WITHDRAW', p_amount, SYSDATE, 'SUCCESS');
+
+    COMMIT;
+    DBMS_OUTPUT.PUT_LINE('Withdrawal Successful');
+EXCEPTION
+    WHEN OTHERS THEN
+        ROLLBACK;
+        DBMS_OUTPUT.PUT_LINE(SQLERRM);
+END withdraw_money;
+```
+
+**Business rules enforced:**
+
+| Rule                    | Error Code | Message                    |
+| ----------------------- | ---------- | -------------------------- |
+| Max ₹20,000 per txn     | `-20002`   | Daily ATM Limit Exceeded   |
+| Balance must be ≥ amount| `-20003`   | Insufficient Funds         |
+| Account must be ACTIVE  | —          | `NO_DATA_FOUND` → caught   |
+
+👉 Validations run **before** touching the money, and failures roll back cleanly.
+
+---
+
+### 🔁 Fund Transfer (Most Important — Atomic Transaction)
+
+```sql
+PROCEDURE transfer_funds (p_from_account NUMBER, p_to_account NUMBER, p_amount NUMBER)
+IS
+    v_balance NUMBER;
+BEGIN
+    SELECT balance INTO v_balance
+      FROM accounts
+     WHERE account_id = p_from_account AND account_status = 'ACTIVE';
+
+    IF v_balance < p_amount THEN
+        RAISE_APPLICATION_ERROR(-20004, 'Insufficient Balance For Transfer');
+    END IF;
+
+    UPDATE accounts SET balance = balance - p_amount WHERE account_id = p_from_account; -- DEBIT
+    UPDATE accounts SET balance = balance + p_amount WHERE account_id = p_to_account;   -- CREDIT
+
+    INSERT INTO transaction
+    VALUES (transaction_seq.NEXTVAL, p_from_account, p_to_account, 'TRANSFER', p_amount, SYSDATE, 'SUCCESS');
+
+    COMMIT;
+    DBMS_OUTPUT.PUT_LINE('Fund Transfer Successful');
+EXCEPTION
+    WHEN OTHERS THEN
+        ROLLBACK;
+        INSERT INTO transaction
+        VALUES (transaction_seq.NEXTVAL, p_from_account, p_to_account, 'TRANSFER', p_amount, SYSDATE, 'FAILED');
+        DBMS_OUTPUT.PUT_LINE(SQLERRM);
+END transfer_funds;
+```
+
+**What it does — the heart of the system:**
+
+1. Validates sender's balance and account status.
+2. **Debit** sender → **Credit** receiver.
+3. Both updates + ledger entry are committed as **one atomic unit** (ACID).
+4. ❗ If *anything* fails midway, `ROLLBACK` ensures money is **never lost or duplicated** — and a `FAILED` transaction record is still logged for traceability.
+
+---
+
+### 📜 Transaction History (Explicit Cursor)
+
+```sql
+PROCEDURE show_transaction_history (p_account_id NUMBER)
+IS
+    CURSOR c_txn IS
+        SELECT txn_id, txn_type, amount, txn_date, txn_status
+          FROM transaction
+         WHERE from_account = p_account_id OR to_account = p_account_id
+         ORDER BY txn_date DESC;
+
+    v_txn_id  transaction.txn_id%TYPE;
+    v_type    transaction.txn_type%TYPE;
+    v_amount  transaction.amount%TYPE;
+    v_date    transaction.txn_date%TYPE;
+    v_status  transaction.txn_status%TYPE;
+BEGIN
+    OPEN c_txn;
+    LOOP
+        FETCH c_txn INTO v_txn_id, v_type, v_amount, v_date, v_status;
+        EXIT WHEN c_txn%NOTFOUND;
+
+        DBMS_OUTPUT.PUT_LINE('Txn ID : ' || v_txn_id ||
+                             ' | Type : '   || v_type ||
+                             ' | Amount : ' || v_amount ||
+                             ' | Status : ' || v_status);
+    END LOOP;
+    CLOSE c_txn;
+END show_transaction_history;
+```
+
+**What it does:** Generates a **mini passbook / statement**.
+
+* Uses an **explicit cursor** (`OPEN → FETCH → EXIT WHEN %NOTFOUND → CLOSE`) to walk through rows one by one.
+* Picks up transactions where the account is **either sender or receiver**.
+* `%TYPE` anchors variables to column datatypes → code won't break if the table definition changes later.
+
+---
+
+## 🔢 7. Sequence & Indexes
+
+```sql
+CREATE SEQUENCE transaction_seq START WITH 1 INCREMENT BY 1;
+```
+
+**What it does:** Generates **unique, gap-free-ish, concurrency-safe** transaction IDs — far safer than `MAX(txn_id)+1` in a multi-user bank.
+
+```sql
+CREATE INDEX idx_account_customer   ON accounts(customer_id);
+CREATE INDEX idx_transaction_account ON transaction(from_account, to_account);
+```
+
+**What it does:** Speeds up the most frequent lookups:
+
+* "Show me all accounts of customer X"
+* "Show me all transactions of account Y"
+
+👉 Converts slow **full table scans** into fast **index scans** as data grows to millions of rows.
+
+> ⚠️ **Note:** Run the `CREATE SEQUENCE` statement **before** compiling the package body, since the package references `transaction_seq`.
+
+---
+
+## ▶️ 8. Demo / How to Run
+
+```sql
+SET SERVEROUTPUT ON;   -- required to see DBMS_OUTPUT messages
+```
+
+### View data
+
+```sql
+SELECT * FROM customer;
+SELECT * FROM accounts;
+SELECT * FROM transaction;
+SELECT * FROM account_audit;
+```
+
+### 💰 Deposit → (account_no, amount)
 
 ```sql
 BEGIN
     bank_package.deposit_money(1001, 5000);
 END;
 /
+```
+
+### 🏧 Withdraw → (account_no, amount)
+
+```sql
+BEGIN
+    bank_package.withdraw_money(1001, 3000);
+END;
+/
+```
+
+### 🔁 Transfer → (from_account, to_account, amount)
+
+```sql
+BEGIN
+    bank_package.transfer_funds(1001, 1002, 7000);
+END;
+/
+```
+
+### 📜 Transaction History -> (account no)
+
+```sql
+BEGIN
+    bank_package.show_transaction_history(1001);
+END;
+/
+```
+
+### 🧮 Balance Enquiry -> (account no)
+
+```sql
+BEGIN
+    DBMS_OUTPUT.PUT_LINE(get_balance(1001));
+END;
+/
+```
+
+### 🧪 Negative Test Cases (to prove validations work)
+
+```sql
+BEGIN
+bank_package.withdraw_money(1001, 50000); -- ORA-20002: ATM Limit Exceeded
+END; 
+/
+
+BEGIN
+bank_package.withdraw_money(1001, 19999999);-- ORA-20002 / -20003
+END; 
+/
+
+BEGIN
+ bank_package.transfer_funds(1002, 1001, 999999); -- ORA-20004 + FAILED txn logged
+END; -- ORA-20004 + FAILED txn logged
+/
+
+```
+
+## 🧰 Tech Stack
+
+| Layer | Technology |
+|---|---|
+| **Database** | Oracle Database 19c |
+| **Language** | PL/SQL (Procedural Language extension to SQL) |
+| **Tools** | Oracle SQL Developer / SQL*Plus |
+| **Output Console** | `DBMS_OUTPUT` package |
+
+### PL/SQL Concepts Used
+
+`DDL` · `DML` · `Primary Key` · `Foreign Key` · `Constraints` ·
+`Stored Procedures` · `Functions` · `Packages (Spec + Body)` ·
+`Row-Level Triggers (BEFORE / AFTER)` · `:OLD` & `:NEW` ·
+`Explicit Cursors` · `%TYPE` anchoring · `Exception Handling` ·
+`RAISE_APPLICATION_ERROR` · `SQLERRM` · `Sequences` · `Indexes` ·
+`Transaction Control (COMMIT / ROLLBACK)` · `Audit Logging`
+
+---
+
+## 🎯 What This Project Does
+
+This **Banking Management System** replicates the core backend of a real bank:
+
+* ✅ **Customer & Account Management** — stores customers and their linked accounts with referential integrity.
+* ✅ **Deposit** — credits money to an active account and logs it in the ledger.
+* ✅ **Withdrawal** — debits money after validating ATM limit (₹20,000), available funds, and account status.
+* ✅ **Fund Transfer** — atomically debits one account and credits another; rolls back fully on failure and records a `FAILED` txn.
+* ✅ **Balance Enquiry** — instant balance via a reusable SQL-callable function.
+* ✅ **Mini Statement** — cursor-driven transaction history for any account.
+* ✅ **Auto Audit Trail** — trigger-based logging of every balance change (old → new) for compliance.
+* ✅ **Data Protection** — DB-level trigger guarantees balance can never go negative, even outside the application.
+* ✅ **Performance** — indexes on high-traffic lookup columns and sequence-driven unique txn IDs.
+
+**Why it matters:** It demonstrates that **business logic + data integrity + security can be enforced at the database layer**, which is exactly how production core-banking systems (CBS), payment gateways, and fintech backends are architected.
+
+---
